@@ -677,7 +677,7 @@ exportZitiVars() {
   done
 }
 
-# generate the requested configuration when run-as root, not as a systemd service
+# Docker passes the "run" command to entrypoint.bash, and this function is then called in-line to ensure that the PKI (via makePki(), which calls issueLeafCerts() to renew the controller's identity), config file, and database are created if they don't exist; on Linux, this function is only called by the running bootstrap.bash directly, and the system service passes "check" to entrypoint.bash, which only performs a preflight check for PKI, config file, and database before calling issueLeafCerts() directly
 bootstrap() {
   if [[ -n "${1:-}" ]]; then
     local _ctrl_config_file="${1}"
