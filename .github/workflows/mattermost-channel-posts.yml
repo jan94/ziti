@@ -1,4 +1,4 @@
-name: mattermost-ziti-webhook
+name: Send Event to Mattermost Channels with Python SDK
 on:
   issues:
   issue_comment:
