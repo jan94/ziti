@@ -20,7 +20,8 @@ jobs:
       ZITI_LOG: 99
       ZITI_NODEJS_LOG: 99
     steps:
-      - uses: openziti/ziti-webhook-action@main
+      # - uses: openziti/ziti-webhook-action@main
+      - uses: openziti/ziti-mattermost-action-py@add-promotion-card
         with:
           ziti-id: ${{ secrets.ZITI_MATTERMOST_IDENTITY }}
           webhook-url: ${{ secrets.ZITI_MATTERMOST_WEBHOOK_URL }}
