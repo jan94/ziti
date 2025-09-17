@@ -63,6 +63,7 @@ type IdentityManager struct {
 	identityStatusMap  *identityStatusMap
 	connections        *ConnectionTracker
 	statusSource       config.IdentityStatusSource
+	disabledIdentityScanner *DisabledIdentityScanner
 }
 
 func NewIdentityManager(env Env) *IdentityManager {
@@ -72,6 +73,7 @@ func NewIdentityManager(env Env) *IdentityManager {
 		identityStatusMap:  newIdentityStatusMap(IdentityActiveIntervalSeconds * time.Second),
 		connections:        newConnectionTracker(env),
 		statusSource:       env.GetConfig().Edge.IdentityStatusConfig.Source,
+		disabledIdentityScanner: newDisabledIdentityScanner(env),
 	}
 	manager.impl = manager
 
@@ -80,7 +82,63 @@ func NewIdentityManager(env Env) *IdentityManager {
 	RegisterCommand(env, &CreateIdentityWithAuthenticatorsCmd{}, &edge_cmd_pb.CreateIdentityWithAuthenticatorsCmd{})
 	RegisterCommand(env, &UpdateServiceConfigsCmd{}, &edge_cmd_pb.UpdateServiceConfigsCmd{})
 
+	go manager.disabledIdentityScanner.Run()
+
 	return manager
+}
+
+func newDisabledIdentityScanner(env Env) *DisabledIdentityScanner {
+    result := &DisabledIdentityScanner{
+        scanInterval: env.GetConfig().Edge.IdentityStatusConfig.DisabledIdentityScanInterval,
+        closeNotify:  env.GetCloseNotifyChannel(),
+    }
+
+	go result.runDisabledIdentityScanLoop()
+	return result
+}
+
+type DisabledIdentityScanner struct {
+    scanInterval time.Duration
+    closeNotify  <-chan struct{}
+}
+
+func (self *DisabledIdentityScanner) runDisabledIdentityScanLoop() {
+    ticker := time.NewTicker(self.scanInterval)
+    defer ticker.Stop()
+    for {
+        select {
+        case <-ticker.C:
+            self.scanForTimeLockedIdentities()
+        case <-self.closeNotify:
+            return
+        }
+    }
+}
+
+func (self *IdentityManager) scanForTimeLockedIdentities() {
+	err := self.GetDb().View(func(tx *bbolt.Tx) error {
+		store := self.GetStore()
+		cursor := store.Cursor(tx)
+		for k, v := cursor.First(); k != nil; k, v = cursor.Next() {
+			boltIdentity, ok := v.(*db.Identity)
+			if !ok || boltIdentity == nil {
+				continue
+			}
+			if boltIdentity.Disabled && boltIdentity.DisabledUntil != nil {
+				if time.Now().After(*boltIdentity.DisabledUntil) {
+					// Unlock identity
+					pfxlog.Logger().WithField("identityId", boltIdentity.Id).Info("Enabling identity after lockout duration elapsed")
+					ctx := change.New().SetSourceType("identity-manager.disabled-identity-scan").SetChangeAuthorType(change.AuthorTypeController)
+					// Ignore error, will retry next scan
+					_ = self.Enable(boltIdentity.Id, ctx)
+				}
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		pfxlog.Logger().WithError(err).Error("Error scanning for time-locked identities")
+	}
 }
 
 func (self *IdentityManager) newModelEntity() *Identity {

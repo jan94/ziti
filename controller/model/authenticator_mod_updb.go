@@ -154,16 +154,11 @@ func (module *AuthModuleUpdb) Process(context AuthContext) (AuthResult, error) {
 	}
 
 	attempts := int64(0)
-	module.attemptsByAuthenticatorId.Upsert(bundle.Authenticator.Id, 0, func(exist bool, prevAttempts int64, newValue int64) int64 {
-		if exist {
-			attempts = prevAttempts + 1
-			return attempts
-		}
+	if val, ok := module.attemptsByAuthenticatorId.Get(bundle.Authenticator.Id); ok {
+		attempts = val
+	}
 
-		return 0
-	})
-
-	if bundle.AuthPolicy.Primary.Updb.MaxAttempts != db.UpdbUnlimitedAttemptsLimit && attempts > bundle.AuthPolicy.Primary.Updb.MaxAttempts {
+	if bundle.AuthPolicy.Primary.Updb.MaxAttempts != db.UpdbUnlimitedAttemptsLimit && attempts >= bundle.AuthPolicy.Primary.Updb.MaxAttempts {
 		reason := fmt.Sprintf("updb auth failed, max attempts exceeded, attempts: %v, maxAttempts: %v", attempts, bundle.AuthPolicy.Primary.Updb.MaxAttempts)
 		failEvent := module.NewAuthEventFailure(context, bundle, reason)
 
@@ -174,6 +169,7 @@ func (module *AuthModuleUpdb) Process(context AuthContext) (AuthResult, error) {
 		if err = module.env.GetManagers().Identity.Disable(bundle.Authenticator.IdentityId, duration, context.GetChangeContext()); err != nil {
 			logger.WithError(err).Error("could not lock identity, unhandled error")
 		}
+		module.attemptsByAuthenticatorId.Remove(bundle.Authenticator.Id)
 
 		return nil, apierror.NewInvalidAuth()
 	}
@@ -195,6 +191,14 @@ func (module *AuthModuleUpdb) Process(context AuthContext) (AuthResult, error) {
 	hr := module.env.GetManagers().Authenticator.ReHashPassword(password, salt)
 
 	if subtle.ConstantTimeCompare([]byte(updb.Password), []byte(hr.Password)) != 1 {
+		// Only increment attempts on failed login
+		module.attemptsByAuthenticatorId.Upsert(bundle.Authenticator.Id, 1, func(exist bool, prevAttempts int64, attemptIncrement int64) int64 {
+			if exist {
+				return prevAttempts + attemptIncrement
+			}
+			return attemptIncrement
+		})
+
 		reason := "could not authenticate, password does not match"
 		failEvent := module.NewAuthEventFailure(context, bundle, reason)
 
